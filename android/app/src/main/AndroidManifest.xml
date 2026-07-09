@@ -12,8 +12,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.GrokProxyPlus"
-        android:usesCleartextTraffic="true"
-        android:extractNativeLibs="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

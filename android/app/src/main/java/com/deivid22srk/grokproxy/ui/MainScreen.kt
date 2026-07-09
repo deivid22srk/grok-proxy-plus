@@ -133,13 +133,12 @@ fun MainScreen() {
         }
     }
 
-    fun runBlocking(block: () -> String?, onOk: () -> Unit = {}) {
+    fun runAction(block: () -> String?) {
         if (busy) return
         busy = true
         scope.launch {
             val err = withContext(Dispatchers.IO) { block() }
             if (err != null) snack(err)
-            else onOk()
             // Refresh immediately after an action.
             try {
                 val raw = withContext(Dispatchers.IO) { Bridge.nativeStatus() }
@@ -186,24 +185,24 @@ fun MainScreen() {
             ServerCard(
                 status = s,
                 busy = busy,
-                onStart = { runBlocking { Bridge.errorMessage(Bridge.nativeStartServer("0.0.0.0:8787")) } },
-                onStop = { runBlocking { Bridge.errorMessage(Bridge.nativeStopServer()) } },
+                onStart = { runAction { Bridge.errorMessage(Bridge.nativeStartServer("0.0.0.0:8787")) } },
+                onStop = { runAction { Bridge.errorMessage(Bridge.nativeStopServer()) } },
                 onCopy = { txt, label -> copy(context, txt); snack("$label copiado") },
                 onOpen = { url -> open(context, url) },
             )
             LoginCard(
                 status = s,
                 busy = busy,
-                onStartLogin = { runBlocking { Bridge.errorMessage(Bridge.nativeStartLogin()) } },
-                onCancelLogin = { runBlocking { Bridge.errorMessage(Bridge.nativeCancelLogin()) } },
+                onStartLogin = { runAction { Bridge.errorMessage(Bridge.nativeStartLogin()) } },
+                onCancelLogin = { runAction { Bridge.errorMessage(Bridge.nativeCancelLogin()) } },
                 onOpenUrl = { url -> open(context, url) },
                 onCopy = { txt, label -> copy(context, txt); snack("$label copiado") },
             )
             AccountCard(
                 status = s,
                 busy = busy,
-                onSetActive = { id -> runBlocking { Bridge.errorMessage(Bridge.nativeSetActive(id)) } },
-                onLogout = { id -> runBlocking { Bridge.errorMessage(Bridge.nativeLogout(id)) } },
+                onSetActive = { id -> runAction { Bridge.errorMessage(Bridge.nativeSetActive(id)) } },
+                onLogout = { id -> runAction { Bridge.errorMessage(Bridge.nativeLogout(id)) } },
             )
             InfoCard(status = s)
             Spacer(Modifier.height(24.dp))
@@ -546,7 +545,7 @@ private fun open(context: Context, url: String) {
 private fun primaryIpAddress(): String? {
     return try {
         NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }
-            .firstOrNull { !it.isLoopback && it.address.size == 4 }?.hostAddress
+            .firstOrNull { !it.isLoopbackAddress() && it.address.size == 4 }?.hostAddress
     } catch (_: Throwable) {
         null
     }
