@@ -161,19 +161,19 @@ fun MainScreen() {
     // prompt; when the launcher returns we run the pending start.
     var pendingStart by remember { mutableStateOf(false) }
 
-    val notifPermLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        if (pendingStart) doStartProxy()
-        pendingStart = false
-    }
-
     fun doStartProxy() {
         runAction {
             val err = Bridge.errorMessage(Bridge.nativeStartServer("0.0.0.0:8787"))
             if (err == null) ProxyService.start(context)
             err
         }
+    }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        if (pendingStart) doStartProxy()
+        pendingStart = false
     }
 
     fun startProxy() {
