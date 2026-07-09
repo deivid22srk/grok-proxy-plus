@@ -42,6 +42,8 @@ import (
         "context"
         "encoding/json"
         "fmt"
+        "io"
+        "net/http"
         "sync"
         "time"
         "unsafe"
@@ -266,6 +268,227 @@ func (a *mobileApp) cancelLogin() {
         a.loginMu.Unlock()
 }
 
+// ---- Usage / account info ----
+
+// usageResp is the JSON envelope returned by nativeGetUsage. It combines:
+//   - rate_limits: live quota from X-Ratelimit-* headers captured by the proxy
+//   - billing: paid-plan usage from GET /v1/billing (cli-chat-proxy.grok.com)
+//   - user: account profile from GET /v1/user
+//   - account_blocked: derived from the /v1/me team_blocked flag
+type usageResp struct {
+        RateLimits     proxyhttp.RateLimit `json:"rate_limits"`
+        Billing        *billingConfig      `json:"billing,omitempty"`
+        User           *userInfo           `json:"user,omitempty"`
+        AccountBlocked bool                `json:"account_blocked"`
+        Email          string              `json:"email"`
+        Error          string              `json:"error,omitempty"`
+}
+
+// billingConfig mirrors the relevant fields of GET /v1/billing.
+type billingConfig struct {
+        Used             jsonVal `json:"used"`
+        MonthlyLimit     jsonVal `json:"monthly_limit"`
+        OnDemandCap      jsonVal `json:"on_demand_cap"`
+        PeriodStart      string  `json:"billing_period_start"`
+        PeriodEnd        string  `json:"billing_period_end"`
+        History          []billingHistory `json:"history,omitempty"`
+}
+
+type billingHistory struct {
+        Year         int     `json:"year"`
+        Month        int     `json:"month"`
+        IncludedUsed jsonVal `json:"included_used"`
+        OnDemandUsed jsonVal `json:"on_demand_used"`
+        TotalUsed    jsonVal `json:"total_used"`
+}
+
+// userInfo mirrors the relevant fields of GET /v1/user.
+type userInfo struct {
+        Email            string `json:"email"`
+        FirstName        string `json:"first_name"`
+        HasGrokCodeAccess bool  `json:"has_grok_code_access"`
+        UserID           string `json:"user_id"`
+}
+
+// jsonVal unwraps the xAI {"val": N} wrapper into a plain number.
+type jsonVal int64
+
+func (v *jsonVal) UnmarshalJSON(b []byte) error {
+        var raw map[string]any
+        if err := json.Unmarshal(b, &raw); err != nil {
+                return err
+        }
+        if val, ok := raw["val"]; ok {
+                switch n := val.(type) {
+                case float64:
+                        *v = jsonVal(int64(n))
+                case json.Number:
+                        n64, _ := n.Int64()
+                        *v = jsonVal(n64)
+                }
+        }
+        return nil
+}
+
+// getUsage assembles the usage snapshot. The rate-limits are read from the
+// proxy (instant, from the last proxied request); billing + user are fetched
+// from the xAI API using the active account's access token. If no account is
+// logged in, only the rate-limit section is returned (with HasData=false).
+func (a *mobileApp) getUsage() usageResp {
+        resp := usageResp{}
+        if a.proxy != nil {
+                resp.RateLimits = a.proxy.RateLimit()
+        }
+
+        token, acc, _, err := a.ensureCreds(context.Background())
+        if err != nil {
+                resp.Error = err.Error()
+                return resp
+        }
+        resp.Email = acc.Email
+
+        // Fetch /v1/billing, /v1/user and /v1/me in parallel — they're
+        // independent and each takes ~200ms.
+        var (
+                wg      sync.WaitGroup
+                billing *billingConfig
+                user    *userInfo
+                blocked bool
+        )
+        const upstreamBase = "https://cli-chat-proxy.grok.com/v1"
+        const apiBase = "https://api.x.ai/v1"
+
+        wg.Add(3)
+        go func() {
+                defer wg.Done()
+                billing = fetchJSON(upstreamBase+"/billing", token, parseBilling)
+        }()
+        go func() {
+                defer wg.Done()
+                user = fetchJSON(upstreamBase+"/user", token, parseUser)
+        }()
+        go func() {
+                defer wg.Done()
+                blocked = fetchMeBlocked(apiBase+"/me", token)
+        }()
+        wg.Wait()
+
+        resp.Billing = billing
+        resp.User = user
+        resp.AccountBlocked = blocked
+        return resp
+}
+
+// fetchJSON is a small generic helper: GET url with the bearer token, decode
+// the JSON body through decodeFn. Returns nil on any error (the usage card
+// just omits the section).
+func fetchJSON[T any](url, token string, decodeFn func([]byte) (T, error)) T {
+        var zero T
+        req, err := http.NewRequest("GET", url, nil)
+        if err != nil {
+                return zero
+        }
+        req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Accept", "application/json")
+        req.Header.Set("x-grok-client-version", store.DefaultClientVersion)
+        req.Header.Set("x-grok-client-surface", "grok-desktop")
+        client := &http.Client{Timeout: 15 * time.Second}
+        resp, err := client.Do(req)
+        if err != nil || resp.StatusCode >= 400 {
+                if resp != nil {
+                        resp.Body.Close()
+                }
+                return zero
+        }
+        body, _ := io.ReadAll(resp.Body)
+        resp.Body.Close()
+        result, err := decodeFn(body)
+        if err != nil {
+                return zero
+        }
+        return result
+}
+
+func parseBilling(b []byte) (*billingConfig, error) {
+        // The xAI /v1/billing response nests everything under "config".
+        var raw struct {
+                Config struct {
+                        Used             jsonVal           `json:"used"`
+                        MonthlyLimit     jsonVal           `json:"monthlyLimit"`
+                        OnDemandCap      jsonVal           `json:"onDemandCap"`
+                        BillingPeriodStart string          `json:"billingPeriodStart"`
+                        BillingPeriodEnd   string          `json:"billingPeriodEnd"`
+                        History          []struct {
+                                BillingCycle struct {
+                                        Year  int `json:"year"`
+                                        Month int `json:"month"`
+                                } `json:"billingCycle"`
+                                IncludedUsed jsonVal `json:"includedUsed"`
+                                OnDemandUsed jsonVal `json:"onDemandUsed"`
+                                TotalUsed    jsonVal `json:"totalUsed"`
+                        } `json:"history"`
+                } `json:"config"`
+        }
+        if err := json.Unmarshal(b, &raw); err != nil {
+                return nil, err
+        }
+        c := &billingConfig{
+                Used:         raw.Config.Used,
+                MonthlyLimit: raw.Config.MonthlyLimit,
+                OnDemandCap:  raw.Config.OnDemandCap,
+                PeriodStart:  raw.Config.BillingPeriodStart,
+                PeriodEnd:    raw.Config.BillingPeriodEnd,
+        }
+        for _, h := range raw.Config.History {
+                c.History = append(c.History, billingHistory{
+                        Year:         h.BillingCycle.Year,
+                        Month:        h.BillingCycle.Month,
+                        IncludedUsed: h.IncludedUsed,
+                        OnDemandUsed: h.OnDemandUsed,
+                        TotalUsed:    h.TotalUsed,
+                })
+        }
+        return c, nil
+}
+
+func parseUser(b []byte) (*userInfo, error) {
+        var raw struct {
+                Email             string `json:"email"`
+                FirstName         string `json:"firstName"`
+                HasGrokCodeAccess bool   `json:"hasGrokCodeAccess"`
+                UserID            string `json:"userId"`
+        }
+        if err := json.Unmarshal(b, &raw); err != nil {
+                return nil, err
+        }
+        return &userInfo{
+                Email:             raw.Email,
+                FirstName:         raw.FirstName,
+                HasGrokCodeAccess: raw.HasGrokCodeAccess,
+                UserID:            raw.UserID,
+        }, nil
+}
+
+// fetchMeBlocked returns true if GET /v1/me reports team_blocked=true.
+func fetchMeBlocked(url, token string) bool {
+        req, _ := http.NewRequest("GET", url, nil)
+        req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Accept", "application/json")
+        req.Header.Set("x-grok-client-version", store.DefaultClientVersion)
+        client := &http.Client{Timeout: 15 * time.Second}
+        resp, err := client.Do(req)
+        if err != nil {
+                return false
+        }
+        defer resp.Body.Close()
+        body, _ := io.ReadAll(resp.Body)
+        var raw struct {
+                TeamBlocked bool `json:"team_blocked"`
+        }
+        _ = json.Unmarshal(body, &raw)
+        return raw.TeamBlocked
+}
+
 // ---- JSON responses ----
 
 type statusResp struct {
@@ -464,6 +687,11 @@ func Java_com_deivid22srk_grokproxy_Bridge_nativeSetActive(env *C.JNIEnv, thiz C
                 return errOut(env, err.Error())
         }
         return errOut(env, "")
+}
+
+//export Java_com_deivid22srk_grokproxy_Bridge_nativeGetUsage
+func Java_com_deivid22srk_grokproxy_Bridge_nativeGetUsage(env *C.JNIEnv, thiz C.jobject) C.jstring {
+        return jsonOut(env, app.getUsage())
 }
 
 // main is required for -buildmode=c-shared. It never runs on Android (the JVM

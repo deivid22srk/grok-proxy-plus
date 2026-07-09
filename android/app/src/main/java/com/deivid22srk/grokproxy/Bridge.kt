@@ -45,6 +45,7 @@ object Bridge {
     @JvmStatic external fun nativeListAccounts(): String
     @JvmStatic external fun nativeLogout(id: String): String
     @JvmStatic external fun nativeSetActive(id: String): String
+    @JvmStatic external fun nativeGetUsage(): String
 
     // ---- Parsed models -------------------------------------------------
 
@@ -116,5 +117,108 @@ object Bridge {
     fun errorMessage(raw: String): String? {
         val o = JSONObject(raw)
         return if (o.has("error")) o.optString("error") else null
+    }
+
+    // ---- Usage models --------------------------------------------------
+
+    data class RateLimits(
+        val limitRequests: Long,
+        val remainingRequests: Long,
+        val limitTokens: Long,
+        val remainingTokens: Long,
+        val lastModel: String,
+        val lastUpdated: String,
+        val hasData: Boolean,
+    )
+
+    data class Billing(
+        val used: Long,
+        val monthlyLimit: Long,
+        val onDemandCap: Long,
+        val periodStart: String,
+        val periodEnd: String,
+        val history: List<BillingHistory>,
+    )
+
+    data class BillingHistory(
+        val year: Int,
+        val month: Int,
+        val includedUsed: Long,
+        val onDemandUsed: Long,
+        val totalUsed: Long,
+    )
+
+    data class UserInfo(
+        val email: String,
+        val firstName: String,
+        val hasGrokCodeAccess: Boolean,
+        val userId: String,
+    )
+
+    data class Usage(
+        val rateLimits: RateLimits?,
+        val billing: Billing?,
+        val user: UserInfo?,
+        val accountBlocked: Boolean,
+        val email: String,
+        val error: String?,
+    )
+
+    /** Parses the JSON envelope returned by nativeGetUsage(). */
+    fun parseUsage(raw: String): Usage {
+        val o = JSONObject(raw)
+        val rlObj = o.optJSONObject("rate_limits")
+        val rateLimits = if (rlObj != null) RateLimits(
+            limitRequests = rlObj.optLong("limit_requests"),
+            remainingRequests = rlObj.optLong("remaining_requests"),
+            limitTokens = rlObj.optLong("limit_tokens"),
+            remainingTokens = rlObj.optLong("remaining_tokens"),
+            lastModel = rlObj.optString("last_model"),
+            lastUpdated = rlObj.optString("last_updated"),
+            hasData = rlObj.optBoolean("has_data"),
+        ) else null
+
+        val billingObj = o.optJSONObject("billing")
+        val billing = if (billingObj != null) {
+            val histArr = billingObj.optJSONArray("history")
+            val history = mutableListOf<BillingHistory>()
+            if (histArr != null) {
+                for (i in 0 until histArr.length()) {
+                    val h = histArr.optJSONObject(i) ?: continue
+                    history.add(BillingHistory(
+                        year = h.optInt("year"),
+                        month = h.optInt("month"),
+                        includedUsed = h.optLong("included_used"),
+                        onDemandUsed = h.optLong("on_demand_used"),
+                        totalUsed = h.optLong("total_used"),
+                    ))
+                }
+            }
+            Billing(
+                used = billingObj.optLong("used"),
+                monthlyLimit = billingObj.optLong("monthly_limit"),
+                onDemandCap = billingObj.optLong("on_demand_cap"),
+                periodStart = billingObj.optString("billing_period_start"),
+                periodEnd = billingObj.optString("billing_period_end"),
+                history = history,
+            )
+        } else null
+
+        val userObj = o.optJSONObject("user")
+        val user = if (userObj != null) UserInfo(
+            email = userObj.optString("email"),
+            firstName = userObj.optString("first_name"),
+            hasGrokCodeAccess = userObj.optBoolean("has_grok_code_access"),
+            userId = userObj.optString("user_id"),
+        ) else null
+
+        return Usage(
+            rateLimits = rateLimits,
+            billing = billing,
+            user = user,
+            accountBlocked = o.optBoolean("account_blocked"),
+            email = o.optString("email"),
+            error = if (o.has("error")) o.optString("error") else null,
+        )
     }
 }

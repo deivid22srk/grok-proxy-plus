@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -48,6 +50,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -120,6 +123,7 @@ fun MainScreen() {
 
     var status by remember { mutableStateOf<Bridge.Status?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var usage by remember { mutableStateOf<Bridge.Usage?>(null) }
 
     fun snack(msg: String) {
         scope.launch { snackbarHostState.showSnackbar(msg) }
@@ -137,6 +141,19 @@ fun MainScreen() {
                 snack("Erro: ${t.message}")
             }
             delay(2500)
+        }
+    }
+
+    // Usage refresh: poll nativeGetUsage() every 15s (slower because it makes
+    // 3 HTTP calls to the xAI API). Also refresh once immediately after any
+    // server start/stop action so the card updates without waiting.
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val raw = withContext(Dispatchers.IO) { Bridge.nativeGetUsage() }
+                usage = Bridge.parseUsage(raw)
+            } catch (_: Throwable) {}
+            delay(15000)
         }
     }
 
@@ -248,6 +265,7 @@ fun MainScreen() {
                 onOpenUrl = { url -> open(context, url) },
                 onCopy = { txt, label -> copy(context, txt); snack("$label copiado") },
             )
+            UsageCard(usage = usage)
             AccountCard(
                 status = s,
                 busy = busy,
@@ -513,6 +531,168 @@ private fun AccountCard(
                 }
             }
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// Usage / quota
+// --------------------------------------------------------------------
+
+@Composable
+private fun UsageCard(usage: Bridge.Usage?) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Insights, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text("Uso da conta", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+
+            if (usage == null) {
+                Text(
+                    "Carregando uso…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                return@Card
+            }
+
+            if (usage.error != null && usage.rateLimits?.hasData != true) {
+                Text(
+                    usage.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                return@Card
+            }
+
+            // Account-blocked warning (free tier out of credits)
+            if (usage.accountBlocked) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Conta sem créditos — adicione em grok.com/?_s=usage",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            // Rate-limits (live, from X-Ratelimit-* headers captured by the proxy)
+            val rl = usage.rateLimits
+            if (rl != null && rl.hasData) {
+                Text(
+                    "Cota atual (free tier)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                // Requests
+                val reqProgress = if (rl.limitRequests > 0) {
+                    (rl.remainingRequests.toFloat() / rl.limitRequests.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Requests", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(
+                        "${rl.remainingRequests} / ${rl.limitRequests}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { reqProgress },
+                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                )
+
+                // Tokens
+                val tokProgress = if (rl.limitTokens > 0) {
+                    (rl.remainingTokens.toFloat() / rl.limitTokens.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Router, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Tokens", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(
+                        "${formatNum(rl.remainingTokens)} / ${formatNum(rl.limitTokens)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { tokProgress },
+                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                )
+
+                if (rl.lastModel.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Último modelo: ${rl.lastModel}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Text(
+                    "Cota disponível após a primeira requisição ao modelo.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // Billing (paid-plan usage)
+            val b = usage.billing
+            if (b != null && (b.monthlyLimit > 0 || b.used > 0)) {
+                HorizontalDivider()
+                Text(
+                    "Faturamento (plano pago)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (b.monthlyLimit > 0) {
+                    val bp = (b.used.toFloat() / b.monthlyLimit.toFloat()).coerceIn(0f, 1f)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Usado no ciclo", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(
+                            "${formatNum(b.used)} / ${formatNum(b.monthlyLimit)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { bp },
+                        modifier = Modifier.fillMaxWidth().height(6.dp),
+                    )
+                }
+                if (b.periodStart.isNotBlank() && b.periodEnd.isNotBlank()) {
+                    Text(
+                        "Ciclo: ${formatDate(b.periodStart)} → ${formatDate(b.periodEnd)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Formats a large number with thousands separators (pt-BR style). */
+private fun formatNum(n: Long): String {
+    return "%,d".format(n).replace(",", ".")
+}
+
+/** Formats an ISO date string (2026-07-01T00:00:00+00:00) to dd/MM/yyyy. */
+private fun formatDate(iso: String): String {
+    return try {
+        val date = java.time.OffsetDateTime.parse(iso)
+        "%02d/%02d/%d".format(date.dayOfMonth, date.monthValue, date.year)
+    } catch (_: Throwable) {
+        iso.take(10)
     }
 }
 
