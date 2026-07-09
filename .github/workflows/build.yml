@@ -39,11 +39,7 @@ jobs:
       - name: Set up Android SDK + NDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
-            ndk;27.0.12077973
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0 ndk;27.0.12077973'
 
       - name: Build Go c-shared libraries for Android ABIs
         run: bash scripts/build-android-libs.sh
