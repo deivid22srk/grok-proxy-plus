@@ -40,3 +40,16 @@ venv/
 *.log
 .DS_Store
 desktop.ini
+
+# ---- Android build artifacts ----
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/**/build/
+*.keystore
+debug.keystore
+# Native libs are built fresh from Go in CI / via scripts/build-android-libs.sh
+android/app/src/main/jniLibs/**/libgrokproxy.so
+android/app/src/main/jniLibs/**/*.h
