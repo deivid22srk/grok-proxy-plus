@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Grok Proxy Plus</string>
+    <string name="notif_channel_name">Servidor proxy</string>
+    <string name="notif_channel_desc">Notificação persistente do servidor proxy em execução</string>
+    <string name="notif_title">Grok Proxy Plus ativo</string>
+    <string name="notif_text">Proxy OpenAI/Anthropic em execução</string>
+    <string name="notif_action_stop">Desligar</string>
 </resources>

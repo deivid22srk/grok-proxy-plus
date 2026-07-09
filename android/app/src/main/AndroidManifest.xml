@@ -5,6 +5,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Foreground service that keeps the Go runtime alive while backgrounded. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- specialUse type (Android 14+): a local HTTP proxy doesn't fit the typed
+         categories; the subtype is declared inside <service> below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Runtime permission (Android 13+) so the FGS notification is visible. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -23,6 +31,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ProxyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <!-- Required by Android 14+ for the specialUse FGS type. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local HTTP proxy server exposing OpenAI/Anthropic-compatible API endpoints on the device" />
+        </service>
     </application>
 
 </manifest>

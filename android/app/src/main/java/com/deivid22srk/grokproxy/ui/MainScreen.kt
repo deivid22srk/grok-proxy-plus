@@ -1,10 +1,15 @@
 package com.deivid22srk.grokproxy.ui
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -67,6 +73,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.deivid22srk.grokproxy.Bridge
+import com.deivid22srk.grokproxy.ProxyService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -148,6 +155,49 @@ fun MainScreen() {
         }
     }
 
+    // ---- Foreground service wiring ------------------------------------
+
+    // Set true while we wait for the user to answer the POST_NOTIFICATIONS
+    // prompt; when the launcher returns we run the pending start.
+    var pendingStart by remember { mutableStateOf(false) }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        if (pendingStart) doStartProxy()
+        pendingStart = false
+    }
+
+    fun doStartProxy() {
+        runAction {
+            val err = Bridge.errorMessage(Bridge.nativeStartServer("0.0.0.0:8787"))
+            if (err == null) ProxyService.start(context)
+            err
+        }
+    }
+
+    fun startProxy() {
+        // On Android 13+ ask for POST_NOTIFICATIONS so the FGS notification is
+        // visible. The FGS itself runs either way, but without the permission
+        // the user can't see/tap the notification.
+        val needsPerm = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        if (needsPerm) {
+            pendingStart = true
+            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            doStartProxy()
+        }
+    }
+
+    fun stopProxy() {
+        runAction {
+            ProxyService.stop(context)                 // leave foreground + stop server
+            Bridge.errorMessage(Bridge.nativeStopServer()) // immediate local stop
+        }
+    }
+
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -185,8 +235,8 @@ fun MainScreen() {
             ServerCard(
                 status = s,
                 busy = busy,
-                onStart = { runAction { Bridge.errorMessage(Bridge.nativeStartServer("0.0.0.0:8787")) } },
-                onStop = { runAction { Bridge.errorMessage(Bridge.nativeStopServer()) } },
+                onStart = { startProxy() },
+                onStop = { stopProxy() },
                 onCopy = { txt, label -> copy(context, txt); snack("$label copiado") },
                 onOpen = { url -> open(context, url) },
             )
@@ -484,7 +534,7 @@ private fun InfoCard(status: Bridge.Status) {
             LabeledValue("Endpoints", "/v1/models, /v1/chat/completions, /v1/responses, /v1/messages")
             if (status.dataDir.isNotBlank()) LabeledValue("Diretório de dados", status.dataDir)
             Text(
-                "O núcleo Go é compilado como libgrokproxy.so (buildmode=c-shared) e empacotado em jniLibs — não em assets, pois Android 14+ bloqueia execução de binários em assets.",
+                "O núcleo Go é compilado como libgrokproxy.so (buildmode=c-shared) e empacotado em jniLibs — não em assets, pois Android 14+ bloqueia execução de binários em assets. Um Foreground Service mantém o processo vivo quando o app está em background.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

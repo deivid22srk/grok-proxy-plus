@@ -50,11 +50,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Best-effort: stop the proxy when the process is torn down. The Go
-        // runtime also registers a destructor via c-shared, so this is belt and
-        // braces.
-        try {
-            if (Bridge.ensureLoaded()) Bridge.nativeStopServer()
-        } catch (_: Throwable) { /* ignore on shutdown */ }
+        // Intentionally do NOT stop the proxy here: the Foreground Service
+        // owns the proxy lifecycle and is what keeps the process (and the Go
+        // runtime) alive in the background. Stopping the server on activity
+        // destroy would kill the proxy the moment the user backgrounded the app.
+        // If the process is actually being torn down (isFinishing == false AND
+        // the service is already stopped), the Go runtime dies with it anyway.
     }
 }
